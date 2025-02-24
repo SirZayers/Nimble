@@ -13,11 +13,10 @@ use std::{
   convert::TryInto,
   ops::Deref,
   sync::{
-    atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst},
+    atomic::{AtomicU32, AtomicU64, Ordering::SeqCst},
     Arc, RwLock,
   },
   time::Duration,
-  u64::MAX,
 };
 use store::ledger::{
   azure_table::TableLedgerStore, filestore::FileStore, in_memory::InMemoryLedgerStore,
@@ -32,9 +31,6 @@ use tonic::{
 
 use clokwerk::TimeUnits;
 use ledger::endorser_proto;
-
-//use tracing::{error, info};
-//use tracing_subscriber;
 
 const DEFAULT_NUM_GRPC_CHANNELS: usize = 1; // the default number of GRPC channels
 
@@ -70,13 +66,8 @@ const ENDORSER_CONNECT_TIMEOUT: u64 = 10; // seconds: the connect timeout to end
 
 const ATTESTATION_STR: &str = "THIS IS A PLACE HOLDER FOR ATTESTATION";
 
-static DEAD_ENDORSERS: AtomicUsize = AtomicUsize::new(0); // Set the number of currently dead endorsers
-static DESIRED_QUORUM_SIZE: AtomicU64 = AtomicU64::new(MAX);
-static MAX_FAILURES: AtomicU64 = AtomicU64::new(3);
 static ENDORSER_REQUEST_TIMEOUT: AtomicU64 = AtomicU64::new(10);
-static ENDORSER_DEAD_ALLOWANCE: AtomicU64 = AtomicU64::new(66);
 static PING_INTERVAL: AtomicU32 = AtomicU32::new(10); // seconds
-static DEACTIVATE_AUTO_RECONFIG: AtomicBool = AtomicBool::new(false);
 
 async fn get_public_key_with_retry(
   endorser_client: &mut endorser_proto::endorser_call_client::EndorserCallClient<Channel>,
@@ -1763,70 +1754,13 @@ impl CoordinatorState {
   ///
   /// A result indicating success or a `CoordinatorError`.
   pub async fn replace_endorsers(&self, hostnames: &[String]) -> Result<(), CoordinatorError> {
-    // TODO: Make the new stuff optional
-    let existing_endorsers = self.get_endorser_uris();
+    let existing_endorsers = self.get_endorser_hostnames();
 
-    // Check if hostnames contains endorsers that are not in existing_endorsers.
-    // If yes, connect to those and then continue
-    // Once done, select the new endorser quorum from the conn_map and reconfigure
-
-    if !hostnames.is_empty() {
-      // Filter out those endorsers which haven't been connected to, yet and connect to them.
-      let mut added_endorsers: Vec<String> = hostnames.to_vec();
-      added_endorsers.retain(|x| !existing_endorsers.contains(x));
-
-      let added_endorsers = self.connect_endorsers(&added_endorsers).await;
-      // After the previous ^ line the new endorsers are in the conn_map as uninitialized
-      if added_endorsers.is_empty() {
-        // This is not an error as long as there are enough qualified endorsers already connected
-        println!("New endorsers couldn't be reached");
-      } else {
-        println!("Connected to new endorsers");
-      }
+    // Connect to new endorsers
+    let new_endorsers = self.connect_endorsers(hostnames).await;
+    if new_endorsers.is_empty() {
+      return Err(CoordinatorError::NoNewEndorsers);
     }
-
-    // Now all available endorsers are in the conn_map, so we select the new quorum from
-    //there
-
-    let mut new_endorsers: EndorserHostnames;
-    let old_endorsers: EndorserHostnames;
-
-    if let Ok(conn_map_rd) = self.conn_map.read() {
-      new_endorsers = conn_map_rd
-        .iter()
-        .filter(|(_pk, endorser)| {
-          matches!(endorser.usage_state, EndorserUsageState::Uninitialized)
-            && endorser.failures == 0
-        })
-        .map(|(pk, endorser)| (pk.clone(), endorser.uri.clone()))
-        .collect();
-
-      old_endorsers = conn_map_rd
-        .iter()
-        .filter(|(_pk, endorser)| matches!(endorser.usage_state, EndorserUsageState::Active))
-        .map(|(pk, endorser)| (pk.clone(), endorser.uri.clone()))
-        .collect();
-      if new_endorsers.is_empty() {
-        eprintln!("No eligible endorsers");
-        return Err(CoordinatorError::FailedToObtainQuorum);
-      }
-
-      // TODO: Replace with better selection method
-      println!("Desired quorum size: {}", DESIRED_QUORUM_SIZE.load(SeqCst));
-      new_endorsers.truncate(DESIRED_QUORUM_SIZE.load(SeqCst).try_into().unwrap());
-    } else {
-      eprintln!("Couldn't get read lock on conn_map");
-      return Err(CoordinatorError::FailedToAcquireReadLock);
-    }
-
-    for (_pk, uri) in &new_endorsers {
-      println!("New endorser URI: {}", uri);
-    }
-
-    DEAD_ENDORSERS.store(0, SeqCst);
-
-    // At this point new_endorsers should contain the hostnames of the new quorum
-    // and old_endorsers should contain the currently active quorum
 
     // Package the list of endorsers into a genesis block of the view ledger
     let view_ledger_genesis_block = {
@@ -1838,7 +1772,7 @@ impl CoordinatorState {
       let block_vec = res.unwrap();
       Block::new(&block_vec)
     };
-    println!("created view ledger genesis block");
+
     // Read the current ledger tail
     let res = self.ledger_store.read_view_ledger_tail().await;
 
@@ -1849,7 +1783,7 @@ impl CoordinatorState {
       );
       return Err(CoordinatorError::FailedToCallLedgerStore);
     }
-    println!("read view ledger tail");
+
     let (tail, height) = res.unwrap();
 
     // Store the genesis block of the view ledger in the ledger store
@@ -1864,12 +1798,12 @@ impl CoordinatorState {
       );
       return Err(CoordinatorError::FailedToCallLedgerStore);
     }
-    println!("appended view ledger genesis block");
+
     let view_ledger_height = res.unwrap();
 
     self
       .apply_view_change(
-        &old_endorsers,
+        &existing_endorsers,
         &new_endorsers,
         &tail,
         &view_ledger_genesis_block,
@@ -2440,23 +2374,12 @@ impl CoordinatorState {
                           if let Ok(mut conn_map_wr) = conn_map.write() {
                             if let Some(endorser_clients) = conn_map_wr.get_mut(&endorser_key) {
                               if endorser_clients.failures > 0 {
-                                // Only update DEAD_ENDORSERS if endorser_client is part of the
-                                // quorum and has previously been marked as unavailable
-                                if endorser_clients.failures > MAX_FAILURES.load(SeqCst)
-                                  && matches!(
-                                    endorser_clients.usage_state,
-                                    EndorserUsageState::Active
-                                  )
-                                {
-                                  DEAD_ENDORSERS.fetch_sub(1, SeqCst);
-                                }
                                 println!(
                                   "Endorser {} reconnected after {} tries",
                                   endorser, endorser_clients.failures
                                 );
                                 // Reset failures on success
                                 endorser_clients.failures = 0;
-                                // TODO: Replace println with info
                               }
                             } else {
                               eprintln!("Endorser key not found in conn_map");
@@ -2567,8 +2490,6 @@ impl CoordinatorState {
       eprintln!("Failed to acquire write lock on conn_map");
     }
 
-    let mut alive_endorser_percentage = 100;
-
     if let Ok(conn_map_r) = self.conn_map.read() {
       if let Some(endorser_clients) = conn_map_r.get(&endorser_key) {
         // Log the failure
@@ -2577,54 +2498,11 @@ impl CoordinatorState {
           "Ping failed for endorser {}. {} pings failed.\n{}",
           endorser, endorser_clients.failures, error_message
         );
-
-        // Only count towards allowance if it first crosses the boundary
-        if matches!(endorser_clients.usage_state, EndorserUsageState::Active)
-          && endorser_clients.failures >= MAX_FAILURES.load(SeqCst) + 1
-        {
-          // Increment dead endorser count
-          if matches!(endorser_clients.usage_state, EndorserUsageState::Active)
-            && endorser_clients.failures == MAX_FAILURES.load(SeqCst) + 1
-          {
-            DEAD_ENDORSERS.fetch_add(1, SeqCst);
-          }
-
-          println!(
-            "Active endorser {} failed more than {} times! Now {} endorsers are dead.",
-            endorser,
-            MAX_FAILURES.load(SeqCst),
-            DEAD_ENDORSERS.load(SeqCst)
-          );
-
-          let active_endorsers_count = conn_map_r
-            .values()
-            .filter(|&e| matches!(e.usage_state, EndorserUsageState::Active))
-            .count();
-          let dead_endorsers_count = DEAD_ENDORSERS.load(SeqCst);
-          println!("Debug: active_endorsers_count = {}", active_endorsers_count);
-          println!("Debug: dead_endorsers_count = {}", dead_endorsers_count);
-          alive_endorser_percentage = 100 - ((dead_endorsers_count * 100) / active_endorsers_count);
-          println!("Debug: {} % alive", alive_endorser_percentage);
-        }
       } else {
         eprintln!("Endorser key not found in conn_map");
       }
     } else {
       eprintln!("Failed to acquire read lock on conn_map");
-    }
-
-    println!(
-      "Debug: {} % alive before replace trigger",
-      alive_endorser_percentage
-    );
-
-    if alive_endorser_percentage < ENDORSER_DEAD_ALLOWANCE.load(SeqCst).try_into().unwrap() {
-      println!("Enough Endorsers have failed now. Endorser replacement triggered");
-      println!("DESIRED_QUORUM_SIZE: {}", DESIRED_QUORUM_SIZE.load(SeqCst));
-      match self.replace_endorsers(&[]).await {
-        Ok(_) => (),
-        Err(_) => eprintln!("Endorser replacement failed"),
-      }
     }
   }
 
@@ -2651,27 +2529,15 @@ impl CoordinatorState {
   ///
   /// # Arguments
   ///
-  /// * `max_failures` - The maximum number of failures allowed.
   /// * `request_timeout` - The request timeout in seconds.
-  /// * `min_alive_percentage` - The minimum percentage of alive endorsers.
-  /// * `quorum_size` - The desired quorum size.
   /// * `ping_interval` - The interval for pinging endorsers in seconds.
-  /// * `deactivate_auto_reconfig` - Whether to deactivate auto reconfiguration.
   pub fn overwrite_variables(
     &mut self,
-    max_failures: u64,
     request_timeout: u64,
-    min_alive_percentage: u64,
-    quorum_size: u64,
     ping_interval: u32,
-    deactivate_auto_reconfig: bool,
   ) {
-    MAX_FAILURES.store(max_failures, SeqCst);
     ENDORSER_REQUEST_TIMEOUT.store(request_timeout, SeqCst);
-    ENDORSER_DEAD_ALLOWANCE.store(min_alive_percentage, SeqCst);
-    DESIRED_QUORUM_SIZE.store(quorum_size, SeqCst);
     PING_INTERVAL.store(ping_interval, SeqCst);
-    DEACTIVATE_AUTO_RECONFIG.store(deactivate_auto_reconfig, SeqCst);
   }
 }
 

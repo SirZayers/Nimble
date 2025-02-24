@@ -5,7 +5,7 @@ use crate::coordinator_state::CoordinatorState;
 use ledger::CustomSerde;
 use std::{
   collections::HashMap, 
-  sync::{atomic::{AtomicBool, Ordering::SeqCst}, Arc},
+  sync::Arc,
 };
 use tonic::{transport::Server, Request, Response, Status};
 #[allow(clippy::derive_partial_eq_without_eq)]
@@ -18,7 +18,7 @@ use coordinator_proto::{
   call_server::{Call, CallServer},
   AppendReq, AppendResp, NewLedgerReq, NewLedgerResp, ReadByIndexReq, ReadByIndexResp,
   ReadLatestReq, ReadLatestResp, ReadViewByIndexReq, ReadViewByIndexResp, ReadViewTailReq,
-  ReadViewTailResp, PingAllReq, PingAllResp, GetTimeoutMapReq, GetTimeoutMapResp, AddEndorsersReq, AddEndorsersResp,
+  ReadViewTailResp, PingAllReq, PingAllResp, GetTimeoutMapReq, GetTimeoutMapResp
 };
 
 use axum::{
@@ -32,10 +32,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tower::ServiceBuilder;
 
-
-
-
-static DEACTIVATE_AUTO_RECONFIG: AtomicBool = AtomicBool::new(false);
 
 pub struct CoordinatorServiceState {
   state: Arc<CoordinatorState>,
@@ -240,27 +236,6 @@ impl Call for CoordinatorServiceState {
 
     Ok(Response::new(reply))
   }
-
-  /// Adds endorsers with the given URIs.
-  async fn add_endorsers(
-    &self,
-    request: Request<AddEndorsersReq>,
-  ) -> Result<Response<AddEndorsersResp>, Status> {
-    let AddEndorsersReq {
-      endorsers,
-    } = request.into_inner();
-
-    let endorsers_uris = endorsers
-      .split(';')
-      .filter(|e| !e.is_empty())
-      .map(|e| e.to_string())
-      .collect::<Vec<String>>();
-
-    let _res = self.state.connect_endorsers(&endorsers_uris).await;
-    let reply = AddEndorsersResp {
-    };
-    Ok(Response::new(reply))
-  }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -337,15 +312,7 @@ async fn new_endorser(
     .map(|e| e.to_string())
     .collect::<Vec<String>>();
 
-  if DEACTIVATE_AUTO_RECONFIG.load(SeqCst) {
-    let res = state.replace_endorsers(&endorsers).await;
-    if res.is_err() {
-      eprintln!("failed to add the endorser ({:?})", res);
-      return (StatusCode::BAD_REQUEST, Json(json!({})));
-    }
-  } else {
-    let _res = state.connect_endorsers(&endorsers).await;
-  }
+  let _res = state.connect_endorsers(&endorsers).await;
   
   
 
@@ -502,17 +469,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .help("The number of grpc channels"),
     )
     .arg(
-      Arg::with_name("max_failures")
-        .short("f")
-        .long("max-failures")
-        .value_name("COUNT")
-        .help(
-          "Sets the maximum number of allowed ping failures before an endorser is declared dead",
-        )
-        .takes_value(true)
-        .default_value("3"),
-    )
-    .arg(
       Arg::with_name("request_timeout")
         .long("request-timeout")
         .value_name("SECONDS")
@@ -521,23 +477,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .default_value("10"),
     )
     .arg(
-      Arg::with_name("min_alive_percentage")
-        .short("m")
-        .long("min-alive")
-        .value_name("PERCENTAGE")
-        .help("Sets the percentage of in-quorum endorsers that must respond to pings. (51-100; 66 = 66%)")
-        .takes_value(true)
-        .default_value("66"),
-    )
-    .arg(
-      Arg::with_name("quorum_size")
-        .short("q")
-        .long("quorum-size")
-        .value_name("COUNT")
-        .help("How many endorsers should be in an active quorum at once")
-        .takes_value(true)
-        .default_value("3"),
-    ).arg(
       Arg::with_name("ping_inverval")
         .short("i")
         .long("ping-interval")
@@ -545,11 +484,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .help("How often to ping endorsers in seconds")
         .takes_value(true)
         .default_value("10"),
-    ).arg(
-      Arg::with_name("deactivate_auto_reconfig")
-      .long("deactivate_auto_reconfig")
-      .help("Deactivate automatic reconfiguration of endorsers")
-      .takes_value(false),
     );
 
   let cli_matches = config.get_matches();
@@ -560,29 +494,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let addr = format!("{}:{}", hostname, port_number).parse()?;
   let str_vec: Vec<&str> = cli_matches.values_of("endorser").unwrap().collect();
 
-  let max_failures_str = cli_matches.value_of("max_failures").unwrap();
-  let max_failures = max_failures_str.parse::<u64>().unwrap_or(5).max(1);
-
   let request_timeout_str = cli_matches.value_of("request_timeout").unwrap();
   let request_timeout = request_timeout_str.parse::<u64>().unwrap_or(12).max(1);
-
-  let min_alive_percentage_str = cli_matches.value_of("min_alive_percentage").unwrap();
-  let min_alive_percentage = min_alive_percentage_str.parse::<u64>().unwrap_or(68).clamp(51, 100);
-
-  let quorum_size_str = cli_matches.value_of("quorum_size").unwrap();
-  let quorum_size = quorum_size_str.parse::<u64>().unwrap_or(11).max(1);
 
   let ping_interval_str = cli_matches.value_of("ping_inverval").unwrap();
   let ping_interval = ping_interval_str.parse::<u32>().unwrap_or(10).max(1);
 
-  if cli_matches.is_present("deactivate_auto_reconfig") {
-    DEACTIVATE_AUTO_RECONFIG.store(true, SeqCst);
-  }
-
-  println!(
-    "Coordinator starting with max_failures: {}, request_timeout: {}, min_alive_percentage: {}, quorum_size: {}",
-    max_failures, request_timeout, min_alive_percentage, quorum_size
-  );
 
   let endorser_hostnames = str_vec
     .iter()
@@ -617,12 +534,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let mut mutcoordinator = coordinator.clone();
 
   mutcoordinator.overwrite_variables(
-    max_failures,
     request_timeout,
-    min_alive_percentage,
-    quorum_size,
     ping_interval,
-    DEACTIVATE_AUTO_RECONFIG.load(SeqCst),
   );
 
   if !endorser_hostnames.is_empty() {
