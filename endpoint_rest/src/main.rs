@@ -4,7 +4,7 @@ use axum::{
   extract::{Extension, Path, Query},
   http::StatusCode,
   response::IntoResponse,
-  routing::{get, put},
+  routing::get,
   Json, Router,
 };
 use axum_server::tls_rustls::RustlsConfig;
