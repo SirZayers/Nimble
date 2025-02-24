@@ -11,7 +11,6 @@ service Call {
   rpc ReadViewTail(ReadViewTailReq) returns (ReadViewTailResp);
   rpc PingAllEndorsers(PingAllReq) returns (PingAllResp);
   rpc GetTimeoutMap(GetTimeoutMapReq) returns (GetTimeoutMapResp);
-  rpc AddEndorsers(AddEndorsersReq) returns (AddEndorsersResp);
 }
 
 message NewLedgerReq {
@@ -86,11 +85,4 @@ message GetTimeoutMapReq {
 
 message GetTimeoutMapResp {
   map<string, uint64> timeout_map = 1;
-}
-
-message AddEndorsersReq {
-  string endorsers = 1;
-}
-
-message AddEndorsersResp {
 }
