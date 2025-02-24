@@ -100,7 +100,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       .route("/serviceid", get(get_identity))
       .route("/timeoutmap", get(get_timeout_map))
       .route("/pingallendorsers", get(ping_all_endorsers))
-      .route("/addendorsers", put(add_endorsers))
       .route("/counters/:handle", get(read_counter).put(new_counter).post(increment_counter))
       // Add middleware to all routes
       .layer(
@@ -406,42 +405,6 @@ async fn ping_all_endorsers(
   }
 
   let resp = PingAllResp {};
-
-  (StatusCode::OK, Json(json!(resp)))
-}
-
-/// Handler for the add_endorsers endpoint.
-async fn add_endorsers(
-  Query(params): Query<HashMap<String, String>>,
-  Extension(state): Extension<Arc<EndpointState>>,
-) -> impl IntoResponse {
-
-  if !params.contains_key("endorsers") {
-    eprintln!("missing a uri endorsers");
-    return (StatusCode::BAD_REQUEST, Json(json!({})));
-  }
-
-  let res = base64_url::decode(&params["endorsers"]);
-  if res.is_err() {
-    eprintln!("received no endorsers uri {:?}", res);
-    return (StatusCode::BAD_REQUEST, Json(json!({})));
-  }
-  let endorsers = res.unwrap();
-  let endorsers = endorsers.as_slice();
-  let endorsers = std::str::from_utf8(endorsers);
-  if endorsers.is_err() {
-    eprintln!("received a bad endorsers uri {:?}", endorsers);
-    return (StatusCode::BAD_REQUEST, Json(json!({})));
-  }
-  let endorsers = endorsers.unwrap();
-
-  let res = state.add_endorsers(endorsers.to_string()).await;
-  if res.is_err() {
-    eprintln!("failed to add endorsers");
-    return (StatusCode::CONFLICT, Json(json!({})));
-  }
-
-  let resp = AddEndorsersResp {};
 
   (StatusCode::OK, Json(json!(resp)))
 }

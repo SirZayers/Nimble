@@ -200,22 +200,6 @@ impl Connection {
       .into_inner();
     Ok(())
   }
-
-  /// Adds endorsers with the given URI.
-  pub async fn add_endorsers(
-    &self,
-    uri: String,
-  ) -> Result<(), EndpointError> {
-    let AddEndorsersResp {} = self.clients[random::<usize>() % self.num_grpc_channels]
-      .clone()
-      .add_endorsers(AddEndorsersReq {
-        endorsers: uri,
-      })
-      .await
-      .map_err(|_e| EndpointError::FailedToAddEndorsers)?
-      .into_inner();
-    Ok(())
-  }
 }
 
 pub struct EndpointState {
@@ -682,24 +666,3 @@ impl EndpointState {
     // respond to the light client
     Ok(())
   }
-
-  /// Adds endorsers with the given URI.
-  pub async fn add_endorsers(
-    &self,
-    uri: String,
-  ) -> Result<(), EndpointError> {
-    
-
-    let _block = {
-      let res = self.conn.add_endorsers(uri).await;
-
-      if res.is_err() {
-        return Err(EndpointError::FailedToAddEndorsers);
-      }
-      res.unwrap()
-    };
-
-    // respond to the light client
-    Ok(())
-  }
-}
