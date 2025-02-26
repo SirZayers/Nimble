@@ -13,7 +13,7 @@ pub mod coordinator_proto {
 use crate::errors::EndpointError;
 use coordinator_proto::{
   call_client::CallClient, AppendReq, AppendResp, NewLedgerReq, NewLedgerResp, ReadLatestReq,
-  ReadLatestResp, ReadViewByIndexReq, ReadViewByIndexResp, ReadViewTailReq, ReadViewTailResp, GetTimeoutMapReq, GetTimeoutMapResp, PingAllReq, PingAllResp
+  ReadLatestResp, ReadViewByIndexReq, ReadViewByIndexResp, ReadViewTailReq, ReadViewTailResp, GetTimeoutMapReq, GetTimeoutMapResp
 };
 use ledger::{
   errors::VerificationError,
@@ -186,19 +186,6 @@ impl Connection {
       .map_err(|_e| EndpointError::FailedToGetTimeoutMap)?
       .into_inner();
     Ok(timeout_map)
-  }
-
-  /// Pings all endorsers.
-  pub async fn ping_all_endorsers(
-    &self,
-  ) -> Result<(), EndpointError> {
-    let PingAllResp {} = self.clients[random::<usize>() % self.num_grpc_channels]
-      .clone()
-      .ping_all_endorsers(PingAllReq {})
-      .await
-      .map_err(|_e| EndpointError::FailedToPingAllEndorsers)?
-      .into_inner();
-    Ok(())
   }
 }
 
@@ -646,24 +633,5 @@ impl EndpointState {
 
     // respond to the light client
     Ok(timeout_map)
-  }
-
-  /// Pings all endorsers.
-  pub async fn ping_all_endorsers(
-    &self,
-  ) -> Result<(), EndpointError> {
-    
-
-    let _block = {
-      let res = self.conn.ping_all_endorsers().await;
-
-      if res.is_err() {
-        return Err(EndpointError::FailedToPingAllEndorsers);
-      }
-      res.unwrap()
-    };
-
-    // respond to the light client
-    Ok(())
   }
 }

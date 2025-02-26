@@ -18,7 +18,7 @@ use coordinator_proto::{
   call_server::{Call, CallServer},
   AppendReq, AppendResp, NewLedgerReq, NewLedgerResp, ReadByIndexReq, ReadByIndexResp,
   ReadLatestReq, ReadLatestResp, ReadViewByIndexReq, ReadViewByIndexResp, ReadViewTailReq,
-  ReadViewTailResp, PingAllReq, PingAllResp, GetTimeoutMapReq, GetTimeoutMapResp
+  ReadViewTailResp, GetTimeoutMapReq, GetTimeoutMapResp
 };
 
 use axum::{
@@ -195,22 +195,6 @@ impl Call for CoordinatorServiceState {
       attestations: attestation_reports,
     };
 
-    Ok(Response::new(reply))
-  }
-
-  /// Pings all endorsers.
-  async fn ping_all_endorsers(
-    &self,
-    _request: Request<PingAllReq>,  // Accept the gRPC request
-) -> Result<Response<PingAllResp>, Status> {
-    // Call the state method to perform the ping task (no return value)
-    println!("Pining all endorsers now from main.rs");
-    self.state.clone().ping_all_endorsers().await;
-
-    // Construct and return the PingAllResp 
-    let reply = PingAllResp {};
-
-    // Return the response
     Ok(Response::new(reply))
   }
 
@@ -594,7 +578,7 @@ mod tests {
   use crate::{
     coordinator_proto::{
       call_server::Call, AppendReq, AppendResp, NewLedgerReq, NewLedgerResp, ReadByIndexReq,
-      ReadByIndexResp, ReadLatestReq, ReadLatestResp, ReadViewTailReq, ReadViewTailResp, PingAllReq
+      ReadByIndexResp, ReadLatestReq, ReadLatestResp, ReadViewTailReq, ReadViewTailResp
     },
     CoordinatorServiceState, CoordinatorState,
   };
@@ -1303,127 +1287,5 @@ mod tests {
     println!("endorser4 process ID is {}", endorser4.child.id());
     println!("endorser5 process ID is {}", endorser5.child.id());
     println!("endorser6 process ID is {}", endorser6.child.id());
-  }
-
-  #[tokio::test]
-  #[ignore]
-  async fn test_ping() {
-    if std::env::var_os("ENDORSER_CMD").is_none() {
-      panic!("The ENDORSER_CMD environment variable is not specified");
-    }
-    let endorser_cmd = {
-      match std::env::var_os("ENDORSER_CMD") {
-        None => panic!("The ENDORSER_CMD environment variable is not specified"),
-        Some(x) => x,
-      }
-    };
-
-    let endorser_args = {
-      match std::env::var_os("ENDORSER_ARGS") {
-        None => String::from(""),
-        Some(x) => x.into_string().unwrap(),
-      }
-    };
-
-    let store = {
-      match std::env::var_os("LEDGER_STORE") {
-        None => String::from("memory"),
-        Some(x) => x.into_string().unwrap(),
-      }
-    };
-
-    let mut ledger_store_args = HashMap::<String, String>::new();
-    if std::env::var_os("COSMOS_URL").is_some() {
-      ledger_store_args.insert(
-        String::from("COSMOS_URL"),
-        std::env::var_os("COSMOS_URL")
-          .unwrap()
-          .into_string()
-          .unwrap(),
-      );
-    }
-
-    if std::env::var_os("STORAGE_ACCOUNT").is_some() {
-      ledger_store_args.insert(
-        String::from("STORAGE_ACCOUNT"),
-        std::env::var_os("STORAGE_ACCOUNT")
-          .unwrap()
-          .into_string()
-          .unwrap(),
-      );
-    }
-
-    if std::env::var_os("STORAGE_MASTER_KEY").is_some() {
-      ledger_store_args.insert(
-        String::from("STORAGE_MASTER_KEY"),
-        std::env::var_os("STORAGE_MASTER_KEY")
-          .unwrap()
-          .into_string()
-          .unwrap(),
-      );
-    }
-
-    if std::env::var_os("NIMBLE_DB").is_some() {
-      ledger_store_args.insert(
-        String::from("NIMBLE_DB"),
-        std::env::var_os("NIMBLE_DB")
-          .unwrap()
-          .into_string()
-          .unwrap(),
-      );
-    }
-
-    if std::env::var_os("NIMBLE_FSTORE_DIR").is_some() {
-      ledger_store_args.insert(
-        String::from("NIMBLE_FSTORE_DIR"),
-        std::env::var_os("NIMBLE_FSTORE_DIR")
-          .unwrap()
-          .into_string()
-          .unwrap(),
-      );
-    }
-
-    // Launch the endorser
-    let _endorser = launch_endorser(&endorser_cmd, endorser_args.clone());
-    println!("Endorser started");
-    // Create the coordinator
-    let coordinator = Arc::new(
-      CoordinatorState::new(&store, &ledger_store_args, None)
-        .await
-        .unwrap(),
-    );
-    println!("Coordinator started");
-    let res = coordinator
-      .replace_endorsers(&["http://[::1]:9090".to_string()])
-      .await;
-    assert!(res.is_ok());
-    println!("Endorser replaced");
-    let server = CoordinatorServiceState::new(coordinator);
-
-    // Print the whole timeout_map from the coordinator state
-    let timeout_map = server.get_state().get_timeout_map();
-    println!("Timeout Map: {:?}", timeout_map);
-
-    // Print the whole timeout_map from the coordinator state again
-    let req = tonic::Request::new(PingAllReq {});
-    let res = server.ping_all_endorsers(req).await;
-    assert!(res.is_ok());
-    let timeout_map = server.get_state().get_timeout_map();
-    println!("Timeout Map after waiting: {:?}", timeout_map);
-
-    let _ = Command::new("pkill")
-      .arg("-f")
-      .arg("endorser")
-      .status()
-      .expect("failed to execute process");
-
-    let req1 = tonic::Request::new(PingAllReq {});
-    let res1 = server.ping_all_endorsers(req1).await;
-    assert!(res1.is_ok());
-    let timeout_map = server.get_state().get_timeout_map();
-    println!(
-      "Timeout Map after waiting and killing process: {:?}",
-      timeout_map
-    );
   }
 }

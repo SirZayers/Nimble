@@ -99,7 +99,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let app = Router::new()
       .route("/serviceid", get(get_identity))
       .route("/timeoutmap", get(get_timeout_map))
-      .route("/pingallendorsers", get(ping_all_endorsers))
       .route("/counters/:handle", get(read_counter).put(new_counter).post(increment_counter))
       // Add middleware to all routes
       .layer(
@@ -389,22 +388,6 @@ async fn get_timeout_map(
   let resp = GetTimeoutMapResp {
     timeout_map: timeout_map,
   };
-
-  (StatusCode::OK, Json(json!(resp)))
-}
-
-/// Handler for the ping_all_endorsers endpoint.
-async fn ping_all_endorsers(
-  Extension(state): Extension<Arc<EndpointState>>,
-) -> impl IntoResponse {
-
-  let res = state.ping_all_endorsers().await;
-  if res.is_err() {
-    eprintln!("failed to ping all endorsers");
-    return (StatusCode::CONFLICT, Json(json!({})));
-  }
-
-  let resp = PingAllResp {};
 
   (StatusCode::OK, Json(json!(resp)))
 }
